@@ -1,0 +1,2096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pipeline Crossing Analyzer</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- JSZip for KMZ extraction -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<!-- Turf.js for spatial analysis -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161920;
+    --surface2: #1e222d;
+    --border: #2a2f3e;
+    --accent: #00e5a0;
+    --accent2: #4f7cff;
+    --accent3: #ff6b6b;
+    --text: #e8eaf0;
+    --muted: #6b7394;
+    --railroad: #ff9f43;
+    --water: #4fc3f7;
+    --local: #a8e063;
+    --state: #f7b731;
+    --federal: #fc5c65;
+    --parcel: #c084fc;
+    --electric: #ffd700;
+    --waterline: #38bdf8;
+    --fiber: #fb923c;
+    --gas-transmission: #f87171;
+    --gas-distribution: #fb923c;
+    --gas-gathering: #a78bfa;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+  }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .logo-pip {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+
+  header h1 {
+    font-family: 'Space Mono', monospace;
+    font-size: 1rem;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+
+  header span {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-left: auto;
+    font-family: 'Space Mono', monospace;
+  }
+
+  /* ── ArcGIS login button ── */
+  .agol-btn {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 14px;
+    color: var(--text);
+    font-size: 0.78rem;
+    font-family: 'Space Mono', monospace;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .agol-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+  .agol-btn.signed-in { border-color: var(--accent); color: var(--accent); }
+  .agol-btn .agol-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+  }
+  .agol-btn.signed-in .agol-dot { background: var(--accent); }
+
+  /* ── Main layout ── */
+  .app {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .upload-zone {
+    margin: 20px;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 32px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    background: var(--surface2);
+  }
+
+  .upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(0,229,160,0.05);
+  }
+
+  .upload-zone input {
+    position: absolute; inset: 0;
+    opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+
+  .upload-icon { font-size: 2.5rem; margin-bottom: 10px; }
+
+  .upload-zone h3 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .upload-zone p {
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  /* ── Status bar ── */
+  .status-bar {
+    margin: 0 20px 16px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    font-family: 'Space Mono', monospace;
+    display: none;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .status-bar.info { display: flex; background: rgba(79,124,255,0.15); color: var(--accent2); border: 1px solid rgba(79,124,255,0.3); }
+  .status-bar.success { display: flex; background: rgba(0,229,160,0.12); color: var(--accent); border: 1px solid rgba(0,229,160,0.3); }
+  .status-bar.error { display: flex; background: rgba(252,92,101,0.12); color: var(--accent3); border: 1px solid rgba(252,92,101,0.3); }
+
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Results ── */
+  .results-section {
+    padding: 0 20px 20px;
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .results-section.visible { display: flex; }
+
+  .results-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: border-color 0.2s;
+    cursor: pointer;
+  }
+
+  .stat-card:hover { border-color: var(--accent); }
+  .stat-card.active { border-color: var(--accent); background: rgba(0,229,160,0.05); }
+
+  .stat-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .stat-info { flex: 1; }
+
+  .stat-label {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+
+  .stat-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .stat-count {
+    font-family: 'Space Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .stat-unit {
+    font-size: 0.65rem;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+  }
+
+  /* ── Pipeline info ── */
+  .pipeline-info {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: none;
+  }
+
+  .pipeline-info.visible { display: block; }
+
+  .pipeline-info h4 {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  .pipeline-stat {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pipeline-stat:last-child { border-bottom: none; }
+  .pipeline-stat span:last-child { font-family: 'Space Mono', monospace; color: var(--accent2); }
+
+  /* ── Map container ── */
+  .map-wrapper {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  #map {
+    position: absolute;
+    inset: 0;
+    background: #0a0c10;
+  }
+
+  .map-overlay {
+    position: absolute;
+    top: 16px; left: 16px;
+    z-index: 1000;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    display: none;
+    max-width: 220px;
+  }
+
+  .map-overlay.visible { display: block; }
+
+  .legend-item {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+
+  .legend-line {
+    width: 28px; height: 3px;
+    border-radius: 2px;
+  }
+
+  .map-overlay h4 {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  /* ── Empty state ── */
+  .empty-map {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  .empty-map .big-icon { font-size: 4rem; margin-bottom: 16px; opacity: 0.4; }
+  .empty-map p { font-size: 0.85rem; opacity: 0.6; }
+
+  /* ── Notes ── */
+  .note {
+    margin: 0 20px 16px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.72rem;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    line-height: 1.5;
+  }
+
+  .note strong { color: var(--text); }
+
+  /* ── Section header ── */
+  .results-section-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    text-transform: uppercase;
+    padding: 10px 20px 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .results-section-header::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .results-subsection-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.58rem;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    padding: 6px 20px 2px 28px;
+    opacity: 0.7;
+  }
+
+  /* ── Parcel load bar ── */
+  .parcel-load-bar {
+    margin: 0 20px 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: none;
+    align-items: center;
+    gap: 10px;
+  }
+  .parcel-load-bar.visible { display: flex; }
+  .parcel-load-info { flex: 1; }
+  .parcel-load-info p { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+  .parcel-load-info strong { font-size: 0.82rem; color: var(--text); }
+  .parcel-load-icon { font-size: 1.4rem; flex-shrink: 0; }
+
+  /* ── Parcel panel ── */
+  .parcel-panel {
+    padding: 0 20px 20px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .parcel-panel.visible { display: flex; }
+
+  .parcel-panel-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .parcel-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+
+  .parcel-list::-webkit-scrollbar { width: 4px; }
+  .parcel-list::-webkit-scrollbar-track { background: transparent; }
+  .parcel-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .parcel-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--parcel);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .parcel-item:hover { border-color: var(--parcel); background: rgba(192,132,252,0.07); }
+  .parcel-item .parcel-owner { font-weight: 600; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .parcel-item .parcel-meta { color: var(--muted); font-size: 0.68rem; font-family: 'Space Mono', monospace; }
+
+  /* ── Export button ── */
+  .export-btn {
+    width: 100%;
+    background: linear-gradient(135deg, var(--accent2), #7c3aed);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    font-family: 'Space Mono', monospace;
+    padding: 12px;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: opacity 0.15s;
+  }
+  .export-btn:hover { opacity: 0.88; }
+
+  /* ── Roads section ── */
+  #roadsSection { margin-top: 0; }
+
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .sidebar { max-height: 60vh; }
+    .map-wrapper { min-height: 50vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-pip">🛢️</div>
+  <h1>Pipeline Crossing Analyzer</h1>
+  <button class="agol-btn" id="agolBtn" onclick="handleAgolLogin()">
+    <div class="agol-dot"></div>
+    <span id="agolBtnLabel">Sign in to ArcGIS</span>
+  </button>
+</header>
+
+<div class="app">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+
+    <div class="upload-zone" id="uploadZone">
+      <input type="file" id="fileInput" accept=".kmz,.kml" />
+      <div class="upload-icon">📂</div>
+      <h3>Drop your KMZ file here</h3>
+      <p>or click to browse · .kmz or .kml accepted</p>
+    </div>
+
+    <div class="status-bar" id="statusBar">
+      <div class="spinner" id="spinner" style="display:none"></div>
+      <span id="statusText"></span>
+    </div>
+
+    <div class="pipeline-info" id="pipelineInfo">
+      <h4>Pipeline Summary</h4>
+      <div class="pipeline-stat"><span>Segments</span><span id="pipSegments">—</span></div>
+      <div class="pipeline-stat"><span>Est. Length</span><span id="pipLength">—</span></div>
+      <div class="pipeline-stat"><span>Bounding Box</span><span id="pipBbox">—</span></div>
+    </div>
+
+    <!-- ── Parcel load indicator ── -->
+    <div class="parcel-load-bar" id="parcelLoadBar">
+      <div class="parcel-load-icon">🏘️</div>
+      <div class="parcel-load-info">
+        <strong id="parcelLoadTitle">Loading parcels…</strong>
+        <p id="parcelLoadMsg">Querying webmap parcel layers</p>
+      </div>
+      <div class="spinner" id="parcelSpinner" style="color:var(--parcel)"></div>
+    </div>
+
+    <div class="results-section" id="resultsSection">
+
+      <div class="results-header">Environment &amp; Hydrology</div>
+
+      <div class="stat-card" id="card-railroad" onclick="toggleLayer('railroad')">
+        <div class="stat-dot" style="background:var(--railroad)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Infrastructure</div>
+          <div class="stat-name">Rail Crossings</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-railroad">0</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-water" onclick="toggleLayer('water')">
+        <div class="stat-dot" style="background:var(--water)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Hydrology</div>
+          <div class="stat-name">Rivers &amp; Waterbodies</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-water">0</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-parcel" onclick="toggleLayer('parcel')">
+        <div class="stat-dot" style="background:var(--parcel)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Land Ownership</div>
+          <div class="stat-name">Parcels Crossed</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-parcel">—</div>
+          <div class="stat-unit">parcels</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ── Roads Section ── -->
+    <div class="results-section" id="roadsSection">
+
+      <div class="results-header">Roads</div>
+
+      <div class="stat-card" id="card-federal" onclick="toggleLayer('federal')">
+        <div class="stat-dot" style="background:var(--federal)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Roads</div>
+          <div class="stat-name">Federal / Interstate</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-federal">0</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-state" onclick="toggleLayer('state')">
+        <div class="stat-dot" style="background:var(--state)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Roads</div>
+          <div class="stat-name">State Roads</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-state">0</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-local" onclick="toggleLayer('local')">
+        <div class="stat-dot" style="background:var(--local)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Roads</div>
+          <div class="stat-name">Local / County Roads</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-local">0</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ── Utilities Section ── -->
+    <div class="results-section" id="utilitiesSection">
+
+      <div class="results-header">Utilities</div>
+
+      <div class="stat-card" id="card-electric" onclick="toggleLayer('electric')">
+        <div class="stat-dot" style="background:var(--electric)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Utilities</div>
+          <div class="stat-name">Electric Transmission</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-electric">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-waterline" onclick="toggleLayer('waterline')">
+        <div class="stat-dot" style="background:var(--waterline)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Utilities</div>
+          <div class="stat-name">Water Lines</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-waterline">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-fiber" onclick="toggleLayer('fiber')">
+        <div class="stat-dot" style="background:var(--fiber)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Utilities</div>
+          <div class="stat-name">Fiber Optic</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-fiber">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="results-header" style="margin-top:8px">Natural Gas</div>
+
+      <div class="stat-card" id="card-gas-transmission" onclick="toggleLayer('gas-transmission')">
+        <div class="stat-dot" style="background:var(--gas-transmission)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Natural Gas</div>
+          <div class="stat-name">Transmission</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-gas-transmission">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-gas-distribution" onclick="toggleLayer('gas-distribution')">
+        <div class="stat-dot" style="background:var(--gas-distribution)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Natural Gas</div>
+          <div class="stat-name">Distribution</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-gas-distribution">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+      <div class="stat-card" id="card-gas-gathering" onclick="toggleLayer('gas-gathering')">
+        <div class="stat-dot" style="background:var(--gas-gathering)"></div>
+        <div class="stat-info">
+          <div class="stat-label">Natural Gas</div>
+          <div class="stat-name">Gathering</div>
+        </div>
+        <div>
+          <div class="stat-count" id="cnt-gas-gathering">—</div>
+          <div class="stat-unit">crossings</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="parcel-panel" id="parcelPanel">
+      <div class="parcel-panel-header">
+        <span>Crossed Parcels</span>
+        <span id="parcelPanelCount" style="color:var(--parcel)"></span>
+      </div>
+      <div class="parcel-list" id="parcelList"></div>
+    </div>
+
+    <div class="note">
+      <strong>Parcel data:</strong> Sign in to your ArcGIS portal to query parcel layers from the configured webmap. Parcels load automatically after KMZ upload when signed in.
+    </div>
+
+    <div class="note">
+      <strong>OSM data:</strong> Road classification — <em>motorway/trunk</em> = Federal, <em>primary/secondary</em> = State, <em>tertiary/residential/unclassified</em> = Local.
+    </div>
+
+    <div style="padding: 0 20px 24px">
+      <button class="export-btn" id="exportBtn" onclick="exportReport()" style="display:none">
+        📄 Export Crossing Report
+      </button>
+    </div>
+
+  </aside>
+
+  <!-- ── Map ── -->
+  <div class="map-wrapper">
+    <div id="map"></div>
+
+    <div class="empty-map" id="emptyState">
+      <div class="big-icon">🗺️</div>
+      <p>Upload a KMZ to analyze pipeline crossings</p>
+    </div>
+
+    <div class="map-overlay" id="legend">
+      <h4>Legend</h4>
+      <div class="legend-item"><div class="legend-line" style="background:#00e5a0"></div> Pipeline</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--railroad)"></div> Railroad</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--water)"></div> River / Water</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--local)"></div> Local Road</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--state)"></div> State Road</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--federal)"></div> Federal Road</div>
+      <div class="legend-item" style="margin-top:6px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ff3b3b;flex-shrink:0"></div>
+        Crossing Point
+      </div>
+      <div class="legend-item">
+        <div class="legend-line" style="background:var(--parcel);opacity:0.8"></div> Parcel (crossed)
+      </div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--electric)"></div> Electric Transmission</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--waterline)"></div> Water Lines</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--fiber)"></div> Fiber Optic</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--gas-transmission)"></div> Gas Transmission</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--gas-distribution)"></div> Gas Distribution</div>
+      <div class="legend-item"><div class="legend-line" style="background:var(--gas-gathering)"></div> Gas Gathering</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// MAP INIT
+// ═══════════════════════════════════════════════
+const map = L.map('map', { zoomControl: true }).setView([39.5, -98.35], 4);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}).addTo(map);
+// Invert OSM tiles to get a dark basemap — no API key needed
+map.getPane('tilePane').style.filter = 'invert(1) hue-rotate(200deg) saturate(0.45) brightness(0.85)';
+// Layer groups
+const layers = {
+  pipeline:          L.layerGroup().addTo(map),
+  railroad:          L.layerGroup().addTo(map),
+  water:             L.layerGroup().addTo(map),
+  local:             L.layerGroup().addTo(map),
+  state:             L.layerGroup().addTo(map),
+  federal:           L.layerGroup().addTo(map),
+  crossings:         L.layerGroup().addTo(map),
+  parcel:            L.layerGroup().addTo(map),
+  electric:          L.layerGroup().addTo(map),
+  waterline:         L.layerGroup().addTo(map),
+  fiber:             L.layerGroup().addTo(map),
+  'gas-transmission': L.layerGroup().addTo(map),
+  'gas-distribution': L.layerGroup().addTo(map),
+  'gas-gathering':    L.layerGroup().addTo(map),
+};
+
+// ── Utility layer definitions (queried after portal login) ──
+// Natural Gas layers share the same FeatureServer — differentiated by TYPE field.
+// Adjust the `where` clause if your Rextag service uses a different field name.
+const UTILITY_LAYERS = [
+  {
+    key:   'electric',
+    title: 'Electric Transmission',
+    url:   'https://data-link.us/portal/sharing/servers/f486bc6f5e884763825ebf9b43ebd8a7/rest/services/Rextag_CentralUSA_PowerAndRenewables/FeatureServer/170',
+    where: '1=1',
+    color: '#ffd700',
+  },
+  {
+    key:   'waterline',
+    title: 'Water Lines',
+    url:   'https://data-link.us/portal/sharing/servers/932c2fd8531f4ddca9ee14a0931c5246/rest/services/Rextag_CentralUSA_OtherIndustries/FeatureServer/200',
+    where: '1=1',
+    color: '#38bdf8',
+  },
+  {
+    key:   'fiber',
+    title: 'Fiber Optic',
+    url:   'https://data-link.us/portal/sharing/servers/636fdb0c01fd405c847ea94b053b37b8/rest/services/Rextag_CentralUSA_Telecommunications/FeatureServer/20',
+    where: '1=1',
+    color: '#fb923c',
+  },
+  {
+    key:   'gas-transmission',
+    title: 'Gas Transmission',
+    url:   'https://data-link.us/portal/sharing/servers/2ecae90df60245b88adf9b26ec4d4b63/rest/services/Rextag_CentralUSA_NaturalGas/FeatureServer/100',
+    where: '1=1',
+    color: '#f87171',
+  },
+  {
+    key:   'gas-distribution',
+    title: 'Gas Distribution',
+    url:   'https://data-link.us/portal/sharing/servers/2ecae90df60245b88adf9b26ec4d4b63/rest/services/Rextag_CentralUSA_NaturalGas/FeatureServer/120',
+    where: '1=1',
+    color: '#fb923c',
+  },
+  {
+    key:   'gas-gathering',
+    title: 'Gas Gathering',
+    url:   'https://data-link.us/portal/sharing/servers/2ecae90df60245b88adf9b26ec4d4b63/rest/services/Rextag_CentralUSA_NaturalGas/FeatureServer/110',
+    where: '1=1',
+    color: '#a78bfa',
+  },
+];
+
+// Store current pipeline state for parcel queries triggered after load
+let currentPipelineLines = null;
+let currentBbox = null;
+
+const layerVisible = { railroad: true, water: true, local: true, state: true, federal: true, parcel: true, electric: true, waterline: true, fiber: true, 'gas-transmission': true, 'gas-distribution': true, 'gas-gathering': true };
+
+function toggleLayer(key) {
+  layerVisible[key] = !layerVisible[key];
+  const card = document.getElementById('card-' + key);
+  if (card) card.classList.toggle('active', !layerVisible[key]);
+  if (layerVisible[key]) map.addLayer(layers[key]);
+  else map.removeLayer(layers[key]);
+}
+
+// ═══════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════
+function setStatus(msg, type = 'info', showSpinner = false) {
+  const bar = document.getElementById('statusBar');
+  bar.className = 'status-bar ' + type;
+  document.getElementById('statusText').textContent = msg;
+  document.getElementById('spinner').style.display = showSpinner ? 'block' : 'none';
+}
+
+function clearStatus() {
+  document.getElementById('statusBar').className = 'status-bar';
+}
+
+// ── Pick up token if we were redirected back (same-tab fallback) ──
+(function checkSessionToken() {
+  const raw = sessionStorage.getItem('agol_token_payload');
+  if (!raw) return;
+  sessionStorage.removeItem('agol_token_payload');
+  try {
+    const params = JSON.parse(raw);
+    if (params.access_token) {
+      agolToken = params.access_token;
+      agolUsername = params.username || 'User';
+      updateLoginUI(true);
+      setStatus(`Signed in as ${agolUsername} — loading webmap layers…`, 'info', true);
+      loadWebmapLayers().then(() => {
+        setStatus(`Signed in · ${webmapLayers.length} parcel layer(s) ready`, 'success');
+        if (currentPipelineLines) queryParcelLayers(currentPipelineLines, currentBbox);
+      });
+    }
+  } catch(e) {}
+})();
+// ═══════════════════════════════════════════════
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+// ═══════════════════════════════════════════════
+// KMZ / KML PARSING
+// ═══════════════════════════════════════════════
+async function handleFile(file) {
+  reset();
+  setStatus('Reading file…', 'info', true);
+
+  try {
+    let kmlText;
+    const name = file.name.toLowerCase();
+
+    if (name.endsWith('.kmz')) {
+      const zip = await JSZip.loadAsync(file);
+      // find the first .kml inside
+      const kmlFile = Object.values(zip.files).find(f => f.name.toLowerCase().endsWith('.kml'));
+      if (!kmlFile) throw new Error('No KML found inside KMZ');
+      kmlText = await kmlFile.async('text');
+    } else {
+      kmlText = await file.text();
+    }
+
+    setStatus('Parsing KML geometry…', 'info', true);
+    const lines = parseKMLLines(kmlText);
+    if (lines.length === 0) throw new Error('No LineString geometries found in KML');
+
+    document.getElementById('emptyState').style.display = 'none';
+    map.invalidateSize(); // ensure Leaflet knows its real dimensions
+
+    // Draw pipeline
+    lines.forEach(coords => {
+      L.polyline(coords.map(c => [c[1], c[0]]), {
+        color: '#00e5a0', weight: 3, opacity: 0.9
+      }).addTo(layers.pipeline);
+    });
+
+    // Compute bbox
+    const allCoords = lines.flat();
+    const lngs = allCoords.map(c => c[0]);
+    const lats = allCoords.map(c => c[1]);
+    const bbox = [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+
+    // Fit map
+    map.fitBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]], { padding: [40, 40] });
+
+    // Pipeline info
+    const totalLen = lines.reduce((sum, coords) => {
+      const line = turf.lineString(coords);
+      return sum + turf.length(line, { units: 'miles' });
+    }, 0);
+
+    document.getElementById('pipSegments').textContent = lines.length;
+    document.getElementById('pipLength').textContent = totalLen.toFixed(1) + ' mi';
+    document.getElementById('pipBbox').textContent =
+      `${bbox[1].toFixed(2)}°N ${Math.abs(bbox[0]).toFixed(2)}°W`;
+    document.getElementById('pipelineInfo').classList.add('visible');
+
+    // Store for parcel query
+    currentPipelineLines = lines;
+    currentBbox = bbox;
+
+    // Query OSM
+    await queryAndAnalyze(lines, bbox);
+
+  } catch (err) {
+    console.error(err);
+    setStatus('Error: ' + err.message, 'error');
+  }
+}
+
+function parseKMLLines(kmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(kmlText, 'text/xml');
+  const lines = [];
+
+  // Grab all LineString coordinates
+  const lineStrings = doc.querySelectorAll('LineString coordinates, MultiGeometry LineString coordinates');
+  lineStrings.forEach(el => {
+    const coords = el.textContent.trim().split(/\s+/).map(c => {
+      const parts = c.split(',');
+      return [parseFloat(parts[0]), parseFloat(parts[1])]; // [lng, lat]
+    }).filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+    if (coords.length >= 2) lines.push(coords);
+  });
+
+  // Also try gx:Track / coordinates if no LineStrings
+  if (lines.length === 0) {
+    const coords2 = doc.querySelectorAll('coordinates');
+    coords2.forEach(el => {
+      const coords = el.textContent.trim().split(/\s+/).map(c => {
+        const parts = c.split(',');
+        return [parseFloat(parts[0]), parseFloat(parts[1])];
+      }).filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+      if (coords.length >= 2) lines.push(coords);
+    });
+  }
+
+  return lines;
+}
+
+// ═══════════════════════════════════════════════
+// OVERPASS QUERY  (multi-endpoint with retry)
+// ═══════════════════════════════════════════════
+
+// All known public Overpass endpoints (CORS-friendly)
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.openstreetmap.ru/api/interpreter',
+];
+
+async function fetchOverpass(query) {
+  const body = 'data=' + encodeURIComponent(query);
+  const errors = [];
+
+  for (let i = 0; i < OVERPASS_ENDPOINTS.length; i++) {
+    const url = OVERPASS_ENDPOINTS[i];
+    setStatus(`Querying OSM (server ${i + 1}/${OVERPASS_ENDPOINTS.length})…`, 'info', true);
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 55000); // 55s per endpoint
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+        },
+        body,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!resp.ok) {
+        errors.push(`${url} → HTTP ${resp.status}`);
+        continue;
+      }
+
+      const data = await resp.json();
+
+      if (!data || !Array.isArray(data.elements)) {
+        errors.push(`${url} → unexpected response shape`);
+        continue;
+      }
+
+      return data; // ✅ success
+    } catch (err) {
+      const reason = err.name === 'AbortError' ? 'timeout' : err.message;
+      errors.push(`${url} → ${reason}`);
+      console.warn('Overpass endpoint failed:', url, reason);
+    }
+  }
+
+  // All endpoints failed
+  throw new Error(
+    'All Overpass API servers failed. Check your internet connection or try again later.\n\nDetails:\n' +
+    errors.join('\n')
+  );
+}
+
+async function queryAndAnalyze(pipelineLines, bbox) {
+  // Expand bbox slightly for edge cases
+  const pad = 0.01;
+  const [minLng, minLat, maxLng, maxLat] = [bbox[0]-pad, bbox[1]-pad, bbox[2]+pad, bbox[3]+pad];
+  const bboxStr = `${minLat},${minLng},${maxLat},${maxLng}`;
+
+  const query = `
+[out:json][timeout:60];
+(
+  way["railway"="rail"](${bboxStr});
+  way["waterway"~"river|stream|canal|drain|ditch"](${bboxStr});
+  way["natural"="water"](${bboxStr});
+  way["water"](${bboxStr});
+  way["highway"~"motorway|trunk|motorway_link|trunk_link"](${bboxStr});
+  way["highway"~"primary|secondary|primary_link|secondary_link"](${bboxStr});
+  way["highway"~"tertiary|residential|unclassified|tertiary_link|service|living_street|road"](${bboxStr});
+);
+out geom;
+  `.trim();
+
+  const data = await fetchOverpass(query);
+
+  setStatus('Running crossing analysis…', 'info', true);
+  await new Promise(r => setTimeout(r, 50)); // yield to UI
+
+  analyzeOSM(pipelineLines, data.elements);
+
+  // Auto-load parcels and utilities if already signed in
+  if (agolToken) {
+    queryParcelLayers(pipelineLines, bbox);
+    queryUtilityLayers(pipelineLines, bbox);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// ARCGIS OAUTH + WEBMAP PARCEL QUERY
+// ═══════════════════════════════════════════════
+const PORTAL_URL   = 'https://data-link.us/portal';
+const WEBMAP_ID    = '8bd65e2ce87145348fc1d602dc95dafe';
+// Register an app on your portal and paste the client ID here:
+const CLIENT_ID    = 'RVdR2XO5dhAkRDxa'; // replace with your portal app client ID
+
+let agolToken      = null;
+let agolUsername   = null;
+let webmapLayers   = [];  // [{title, url, layerId}] — discovered from webmap
+
+// ── Login button handler ──
+function handleAgolLogin() {
+  if (agolToken) {
+    // Already signed in — sign out
+    agolToken = null;
+    agolUsername = null;
+    webmapLayers = [];
+    updateLoginUI(false);
+    return;
+  }
+  openOAuthPopup();
+}
+
+function updateLoginUI(signedIn) {
+  const btn   = document.getElementById('agolBtn');
+  const label = document.getElementById('agolBtnLabel');
+  if (signedIn) {
+    btn.classList.add('signed-in');
+    label.textContent = agolUsername ? `${agolUsername} · Sign out` : 'Signed in · Sign out';
+  } else {
+    btn.classList.remove('signed-in');
+    label.textContent = 'Sign in to ArcGIS';
+  }
+}
+
+// ── OAuth popup flow ──
+// Uses ArcGIS implicit grant (token in URL hash of redirect)
+// The redirect_uri must be registered on your portal app.
+// For GitHub Pages: register https://<user>.github.io/<repo>/oauth-callback.html
+// We handle the token either via postMessage from a popup or via the same-window redirect.
+function openOAuthPopup() {
+  const redirectUri = encodeURIComponent(window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/') + 'oauth-callback.html');
+  const authUrl = `${PORTAL_URL}/sharing/rest/oauth2/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${redirectUri}&expiration=120`;
+
+  const popup = window.open(authUrl, 'agolLogin', 'width=600,height=550,left=200,top=100');
+
+  // Listen for token posted back from callback page
+  window.addEventListener('message', function onMsg(e) {
+    if (!e.data || !e.data.access_token) return;
+    window.removeEventListener('message', onMsg);
+    if (popup && !popup.closed) popup.close();
+    agolToken = e.data.access_token;
+    fetchCurrentUser().then(() => {
+      updateLoginUI(true);
+      setStatus(`Signed in as ${agolUsername} — loading webmap layers…`, 'info', true);
+      loadWebmapLayers().then(() => {
+        setStatus(`Signed in · ${webmapLayers.length} parcel layer(s) ready`, 'success');
+        // If a pipeline is already loaded, run parcels now
+        if (currentPipelineLines) queryParcelLayers(currentPipelineLines, currentBbox);
+      });
+    });
+  });
+}
+
+async function fetchCurrentUser() {
+  try {
+    const r = await portalFetch(`${PORTAL_URL}/sharing/rest/community/self?f=json`);
+    agolUsername = r.username || r.fullName || 'User';
+  } catch(e) { agolUsername = 'User'; }
+}
+
+// ── Fetch webmap definition and extract FeatureServer layers ──
+async function loadWebmapLayers() {
+  webmapLayers = [];
+  try {
+    const data = await portalFetch(
+      `${PORTAL_URL}/sharing/rest/content/items/${WEBMAP_ID}/data?f=json`
+    );
+
+    // Dump full structure so we can diagnose layer count issues
+    console.log('[Webmap] Raw operationalLayers:', JSON.stringify(data?.operationalLayers, null, 2));
+
+    // Walk the entire tree aggressively — no assumptions about structure
+    collectAllLayers(data?.operationalLayers || []);
+
+    await resolveServiceEnumerations();
+    console.log(`[Parcels] ${webmapLayers.length} queryable layer(s) discovered:`, webmapLayers.map(l => l.title));
+  } catch(e) {
+    console.error('[Parcels] Failed to load webmap:', e);
+    setStatus('Could not load webmap — check portal access', 'error');
+  }
+}
+
+// Walk every node in the operationalLayers tree and collect all
+// FeatureServer/MapServer layers regardless of nesting structure.
+function collectAllLayers(nodes) {
+  if (!Array.isArray(nodes)) return;
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+
+    const url = (node.url || '').trim().replace(/\/$/, '');
+
+    if (url && (/FeatureServer/i.test(url) || /MapServer/i.test(url))) {
+      const match = url.match(/\/(FeatureServer|MapServer)\/(\d+)$/i);
+      if (match) {
+        // URL already includes layer index e.g. .../FeatureServer/2
+        const baseUrl = url.slice(0, url.lastIndexOf('/'));
+        const layerId = parseInt(match[2]);
+        addLayerIfNew(node.title || node.id || `Layer ${layerId}`, baseUrl, layerId);
+      } else {
+        // Service root URL — use layerId field if present, else query the service for all sublayers
+        if (node.layerId != null) {
+          addLayerIfNew(node.title || node.id || url, url, node.layerId);
+        } else {
+          // Queue an async fetch to enumerate sublayers from the service
+          // (we can't await inside this sync walker, so push a promise)
+          _pendingServiceEnumerations.push({ url, title: node.title || node.id || url });
+        }
+      }
+    }
+
+    // Recurse into every array-valued property
+    for (const key of Object.keys(node)) {
+      if (Array.isArray(node[key]) && node[key].length && typeof node[key][0] === 'object') {
+        collectAllLayers(node[key]);
+      }
+    }
+  }
+}
+
+let _pendingServiceEnumerations = [];
+
+// Called after collectAllLayers to resolve any service-root URLs
+async function resolveServiceEnumerations() {
+  for (const { url, title } of _pendingServiceEnumerations) {
+    try {
+      const info = await portalFetch(`${url}?f=json`);
+      if (info.error) { console.warn('[Parcels] Service error:', url, info.error.message); continue; }
+      const serviceLayers = info.layers || [];
+      if (serviceLayers.length === 0) {
+        addLayerIfNew(title, url, 0);
+      } else {
+        for (const sl of serviceLayers) {
+          if (sl.subLayerIds && sl.subLayerIds.length) continue; // skip group layers
+          addLayerIfNew(sl.name || title, url, sl.id);
+        }
+      }
+    } catch(e) {
+      console.warn('[Parcels] Could not enumerate:', url, e.message);
+    }
+  }
+  _pendingServiceEnumerations = [];
+}
+
+function addLayerIfNew(title, baseUrl, layerId) {
+  if (webmapLayers.some(l => l.url === baseUrl && l.layerId === layerId)) return;
+  console.log(`[Parcels] ✅ Found: "${title}" → ${baseUrl}/${layerId}`);
+  webmapLayers.push({ title, url: baseUrl, layerId });
+}
+
+// ── Token-aware fetch helper ──
+// Only appends the portal token to requests going to our own portal.
+// External public ArcGIS services must be queried without it.
+async function portalFetch(url) {
+  const sep = url.includes('?') ? '&' : '?';
+  const portalHost = PORTAL_URL.replace('https://','').split('/')[0];
+  const isInternal = url.includes(portalHost);
+  const fullUrl = (agolToken && isInternal) ? `${url}${sep}token=${agolToken}` : url;
+  const r = await fetch(fullUrl);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ── Main parcel query — runs against all webmap layers ──
+async function queryParcelLayers(pipelineLines, bbox) {
+  if (!agolToken) return; // not signed in
+  if (!webmapLayers.length) {
+    setParcelStatus('No parcel layers found', 'Check webmap configuration', false);
+    return;
+  }
+
+  setParcelStatus('Loading parcels…', `Querying ${webmapLayers.length} layer(s)`);
+  document.getElementById('cnt-parcel').textContent = '…';
+
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const pipeFeatures = pipelineLines.map(c => turf.lineString(c));
+  pipelineLines_ref = pipelineLines; // raw [lng,lat] arrays for pure-JS intersection
+  const crossedParcels = [];
+  const seen = new Set();
+
+  // Build the pipeline as an ArcGIS geometry for the server-side spatial filter
+  // (reduces data transfer — server returns only features that touch the pipeline bbox)
+  const esriEnv = `${minLng},${minLat},${maxLng},${maxLat}`;
+
+  for (let li = 0; li < webmapLayers.length; li++) {
+    const lyr = webmapLayers[li];
+    setParcelStatus(
+      `Querying parcels… (${li + 1}/${webmapLayers.length})`,
+      lyr.title
+    );
+
+    // Paginate — ArcGIS caps at maxRecordCount per request (often 1000 or 2000)
+    let offset = 0;
+    const pageSize = 1000;
+    let fetchMore = true;
+
+    while (fetchMore) {
+      // Only send the portal token to our own portal — external public ArcGIS
+      // services (services1/2/3.arcgis.com) are public and reject foreign tokens
+      const isInternalService = lyr.url.includes(PORTAL_URL.replace('https://','').split('/')[0]);
+      const tokenToUse = isInternalService ? agolToken : '';
+
+      const params = new URLSearchParams({
+        where:             '1=1',
+        geometry:          esriEnv,
+        geometryType:      'esriGeometryEnvelope',
+        inSR:              '4326',
+        spatialRel:        'esriSpatialRelIntersects',
+        outFields:         '*',
+        outSR:             '4326',
+        returnGeometry:    'true',
+        resultOffset:      offset,
+        resultRecordCount: pageSize,
+        f:                 'geojson',
+      });
+      if (tokenToUse) params.set('token', tokenToUse);
+
+      try {
+        const url = `${lyr.url}/${lyr.layerId}/query?${params}`;
+        console.log(`[Parcels] Layer "${lyr.title}" offset=${offset} (${isInternalService ? 'internal' : 'public'}):`, url.slice(0, 140));
+        const resp = await fetch(url);
+
+        if (!resp.ok) {
+          console.error(`[Parcels] HTTP ${resp.status} for layer "${lyr.title}"`);
+          break;
+        }
+
+        const json = await resp.json();
+        if (json.error) {
+          console.error(`[Parcels] Error for layer "${lyr.title}":`, json.error.message || JSON.stringify(json.error));
+          break;
+        }
+
+        const features = json.features || [];
+        console.log(`[Parcels] Layer "${lyr.title}" offset=${offset}: ${features.length} features returned`);
+        if (features.length === 0 && offset === 0) {
+          console.warn(`[Parcels] Layer "${lyr.title}" returned 0 features — check token, layer visibility, or bbox`);
+          console.log(`[Parcels] Query URL was: ${lyr.url}/${lyr.layerId}/query bbox=${esriEnv}`);
+        }
+        processParcels(features, pipeFeatures, crossedParcels, seen, lyr.title);
+        document.getElementById('cnt-parcel').textContent = crossedParcels.length;
+
+        // Continue paginating if we got a full page
+        fetchMore = features.length === pageSize;
+        offset += features.length;
+
+      } catch(e) {
+        console.error(`[Parcels] Fetch error for layer "${lyr.title}":`, e);
+        break;
+      }
+
+      await new Promise(r => setTimeout(r, 20));
+    }
+  }
+
+  finishParcels(crossedParcels);
+  hideParcelStatus();
+}
+
+// ── Shared intersection test + map rendering ──
+// Returns [minLng, minLat, maxLng, maxLat] for any GeoJSON geometry
+function geomBbox(geom) {
+  const coords = flatCoords(geom.coordinates);
+  const lngs = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+  return [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+}
+function flatCoords(c) {
+  if (!Array.isArray(c)) return [];
+  if (typeof c[0] === 'number') return [c];
+  return c.flatMap(flatCoords);
+}
+function bboxOverlap(a, b) {
+  // a, b = [minLng, minLat, maxLng, maxLat]
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
+// Precise point-in-polygon using ray casting (no Turf dependency)
+function pointInPolygon(pt, ring) {
+  const [x, y] = pt;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Precise segment-vs-segment intersection test
+function segmentsIntersect(a1, a2, b1, b2) {
+  const d1x = a2[0]-a1[0], d1y = a2[1]-a1[1];
+  const d2x = b2[0]-b1[0], d2y = b2[1]-b1[1];
+  const denom = d1x*d2y - d1y*d2x;
+  if (denom === 0) return false;
+  const t = ((b1[0]-a1[0])*d2y - (b1[1]-a1[1])*d2x) / denom;
+  const u = ((b1[0]-a1[0])*d1y - (b1[1]-a1[1])*d1x) / denom;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+// Test if a polyline (array of [lng,lat]) intersects a polygon ring
+function lineIntersectsRing(lineCoords, ring) {
+  for (let i = 0; i < lineCoords.length - 1; i++) {
+    for (let j = 0; j < ring.length - 1; j++) {
+      if (segmentsIntersect(lineCoords[i], lineCoords[i+1], ring[j], ring[j+1])) return true;
+    }
+  }
+  return false;
+}
+
+// Main intersection test — pipeline line vs parcel polygon
+// Uses pure-JS geometry, no Turf, no silent failures
+function pipelineIntersectsParcel(pipelineLines, parcelFeat) {
+  const geom = parcelFeat.geometry;
+  if (!geom) return false;
+
+  // Get all rings from Polygon or MultiPolygon
+  let rings = [];
+  if (geom.type === 'Polygon') rings = geom.coordinates;
+  else if (geom.type === 'MultiPolygon') rings = geom.coordinates.flat();
+  else return false;
+
+  // Get exterior rings only (index 0 of each polygon)
+  const exteriors = geom.type === 'Polygon'
+    ? [geom.coordinates[0]]
+    : geom.coordinates.map(poly => poly[0]);
+
+  for (const lineCoords of pipelineLines) {
+    for (const ring of exteriors) {
+      if (lineIntersectsRing(lineCoords, ring)) return true;
+      for (const pt of lineCoords) {
+        if (pointInPolygon(pt, ring)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Debug helper — call from console: debugParcelIntersection(0) to inspect first parcel
+window._debugParcels = [];
+function debugParcelIntersection(idx) {
+  const feat = window._debugParcels[idx];
+  if (!feat) { console.log('No parcel at index', idx); return; }
+  const p = feat.properties || {};
+  console.log('Parcel:', p.OWNER || p.owner || p.NAME || 'unknown');
+  console.log('Geometry type:', feat.geometry?.type);
+  const coords = flatCoords(feat.geometry?.coordinates || []);
+  console.log('Coord count:', coords.length, 'First coord:', coords[0], 'Last:', coords[coords.length-1]);
+  console.log('Pipeline first point:', pipelineLines_ref[0]?.[0]);
+  console.log('Intersects?', pipelineIntersectsParcel(pipelineLines_ref, feat));
+}
+
+function processParcels(features, pipeFeatures, crossedParcels, seen, layerTitle = '') {
+  if (features.length > 0) {
+    const s = features[0];
+    console.log(`[Parcels] "${layerTitle}" sample — type: ${s?.geometry?.type}, props:`, Object.keys(s?.properties || {}));
+    console.log(`[Parcels] "${layerTitle}" sample coords (first 3):`, JSON.stringify(flatCoords(s?.geometry?.coordinates || []).slice(0,3)));
+  }
+
+  window._debugParcels.push(...features.filter(f => f.geometry));
+  let checked = 0, crossed = 0;
+  features.forEach(feat => {
+    if (!feat.geometry) return;
+    const p  = feat.properties || {};
+    const id = p.OBJECTID || p.objectid || p.GlobalID || p.globalid ||
+               p.parcel_id || p.PARCEL_ID || p.parcelnumb || p.APN || p.apn ||
+               JSON.stringify(feat.geometry.coordinates).slice(0, 80);
+    if (seen.has(id)) return;
+    checked++;
+
+    if (!pipelineIntersectsParcel(pipelineLines_ref, feat)) return;
+
+    crossed++;
+    seen.add(id);
+    feat._layerTitle = layerTitle;
+    crossedParcels.push(feat);
+
+    try {
+      L.geoJSON(feat, {
+        style: { color: '#c084fc', weight: 2, fillColor: '#c084fc', fillOpacity: 0.22, opacity: 0.9 }
+      })
+      .bindPopup(() => buildParcelPopup(feat.properties, layerTitle))
+      .addTo(layers.parcel);
+    } catch(e) { console.warn('[Parcels] Draw error:', e.message); }
+  });
+
+  console.log(`[Parcels] "${layerTitle}": ${features.length} returned, ${checked} checked, ${crossed} crossed`);
+}
+
+// Module-level reference to raw pipeline coords for use in processParcels
+let pipelineLines_ref = [];
+
+function buildParcelPopup(p, layerTitle) {
+  if (!p) return '<i>No attributes</i>';
+  // Try many common field name conventions for owner / parcel number / acreage
+  const owner  = p.OWNER || p.owner || p.OWNER_NAME || p.owner_name ||
+                 p.OwnName || p.OWNERNAME || p.ownername || p.NAME || '—';
+  const apn    = p.APN || p.apn || p.PARCEL_ID || p.parcel_id ||
+                 p.parcelnumb || p.PARCELNUMB || p.PIN || p.pin || '—';
+  const acres  = p.GISACRE || p.gisacre || p.ACRES || p.acres ||
+                 p.GIS_ACRES || p.Shape_Area || null;
+  const addr   = p.SITUS || p.situs || p.ADDRESS || p.address ||
+                 p.SITE_ADDRESS || p.site_address || p.MAILADD || p.mailadd || '';
+  const county = p.COUNTY || p.county || p.COUNTY_NAME || p.county_name || '';
+
+  return `
+    <div style="min-width:190px;font-size:0.82em">
+      ${layerTitle ? `<div style="font-size:0.7em;color:#888;margin-bottom:4px">${layerTitle}</div>` : ''}
+      <b style="color:#c084fc">${owner}</b><br>
+      <span style="color:#888">APN: ${apn}</span><br>
+      ${acres != null ? `Area: ${parseFloat(acres).toFixed(2)} ac<br>` : ''}
+      ${addr  ? `<span style="color:#aaa">${addr}</span><br>` : ''}
+      ${county ? `<span style="color:#666;font-size:0.9em">${county}</span>` : ''}
+    </div>`;
+}
+
+function finishParcels(crossedParcels) {
+  document.getElementById('cnt-parcel').textContent = crossedParcels.length;
+  renderParcelList(crossedParcels);
+  document.getElementById('parcelPanel').classList.add('visible');
+}
+
+function renderParcelList(parcels) {
+  const list  = document.getElementById('parcelList');
+  const count = document.getElementById('parcelPanelCount');
+  list.innerHTML = '';
+  count.textContent = parcels.length + ' found';
+
+  if (parcels.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:0.75rem;padding:8px 0">No parcels intersected the pipeline corridor.</div>';
+    return;
+  }
+
+  parcels.forEach(feat => {
+    const p      = feat.properties || {};
+    const owner  = p.OWNER || p.owner || p.OWNER_NAME || p.owner_name ||
+                   p.OwnName || p.OWNERNAME || p.ownername || p.NAME || 'Unknown Owner';
+    const apn    = p.APN || p.apn || p.PARCEL_ID || p.parcel_id ||
+                   p.parcelnumb || p.PARCELNUMB || p.PIN || p.pin || '—';
+    const acres  = p.GISACRE || p.gisacre || p.ACRES || p.acres || p.GIS_ACRES || null;
+    const source = feat._layerTitle || '';
+
+    const item = document.createElement('div');
+    item.className = 'parcel-item';
+    item.innerHTML = `
+      <div class="parcel-owner" title="${owner}">${owner}</div>
+      <div class="parcel-meta">APN ${apn}${acres ? ' · ' + parseFloat(acres).toFixed(1) + ' ac' : ''}${source ? ' · ' + source : ''}</div>
+    `;
+    item.addEventListener('click', () => {
+      try { map.fitBounds(L.geoJSON(feat).getBounds(), { padding: [60, 60] }); } catch(e) {}
+    });
+    list.appendChild(item);
+  });
+}
+
+function setParcelStatus(title, msg, spinning = true) {
+  const bar = document.getElementById('parcelLoadBar');
+  bar.classList.add('visible');
+  document.getElementById('parcelLoadTitle').textContent = title;
+  document.getElementById('parcelLoadMsg').textContent   = msg;
+  document.getElementById('parcelSpinner').style.display = spinning ? 'block' : 'none';
+}
+
+function hideParcelStatus() {
+  document.getElementById('parcelLoadBar').classList.remove('visible');
+}
+
+
+
+// ═══════════════════════════════════════════════
+// UTILITY LAYER QUERY
+// ═══════════════════════════════════════════════
+// Resolve actual ArcGIS Server URL from a portal federated server proxy URL.
+// Input:  https://portal/sharing/servers/{id}/rest/services/Svc/FeatureServer/170
+// Output: https://actualserver/arcgis/rest/services/Svc/FeatureServer/170
+const _resolvedUrls = {};
+async function resolveUtilityUrl(proxyUrl) {
+  if (_resolvedUrls[proxyUrl]) return _resolvedUrls[proxyUrl];
+
+  // Match: /sharing/servers/{id}/rest/{everything-after}
+  const m = proxyUrl.match(/sharing\/servers\/([a-f0-9]+)\/rest\/(.+)/i);
+  if (!m) return proxyUrl;
+  const [, serverId, restPath] = m;
+
+  try {
+    const info = await portalFetch(
+      `${PORTAL_URL}/sharing/rest/portals/self/servers/${serverId}?f=json`
+    );
+    console.log(`[Utilities] Server ${serverId} info:`, JSON.stringify(info).slice(0, 200));
+
+    const base = (info.url || info.adminUrl || '').replace(/\/$/, '');
+    if (!base) throw new Error('No url in server info');
+
+    // restPath is e.g. "services/Rextag_.../FeatureServer/170"
+    const resolved = `${base}/rest/${restPath}`;
+    console.log(`[Utilities] ✅ Resolved: ${resolved}`);
+    _resolvedUrls[proxyUrl] = resolved;
+    return resolved;
+  } catch(e) {
+    console.warn(`[Utilities] Could not resolve server ${serverId}:`, e.message);
+    // Fall back to proxy URL — may still work depending on portal config
+    return proxyUrl;
+  }
+}
+
+async function queryUtilityLayers(pipelineLines, bbox) {
+  if (!agolToken) return;
+
+  document.getElementById('utilitiesSection').classList.add('visible');
+
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const esriEnv = `${minLng},${minLat},${maxLng},${maxLat}`;
+
+  for (const def of UTILITY_LAYERS) {
+    document.getElementById('cnt-' + def.key).textContent = '…';
+
+    const params = new URLSearchParams({
+      where:             def.where,
+      geometry:          esriEnv,
+      geometryType:      'esriGeometryEnvelope',
+      inSR:              '4326',
+      spatialRel:        'esriSpatialRelIntersects',
+      outFields:         '*',
+      outSR:             '4326',
+      returnGeometry:    'true',
+      resultRecordCount: '2000',
+      f:                 'geojson',
+      token:             agolToken,
+    });
+
+    try {
+      // Federated server URLs need token as a URL param (not just header)
+      // and must use the portal proxy path exactly as given
+      const resolvedUrl = await resolveUtilityUrl(def.url);
+      const url = `${resolvedUrl}/query`;
+      console.log(`[Utilities] Querying "${def.title}" (POST):`, url);
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params,
+        });
+      } catch(fetchErr) {
+        console.error(`[Utilities] CORS/network error for "${def.title}":`, fetchErr.message);
+        document.getElementById('cnt-' + def.key).textContent = '!';
+        continue;
+      }
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        console.error(`[Utilities] HTTP ${resp.status} for "${def.title}". Body:`, body.slice(0, 300));
+        document.getElementById('cnt-' + def.key).textContent = '!';
+        continue;
+      }
+      const json = await resp.json();
+      if (json.error) {
+        console.error(`[Utilities] ArcGIS error for "${def.title}":`, JSON.stringify(json.error));
+        document.getElementById('cnt-' + def.key).textContent = '!';
+        continue;
+      }
+
+      const features = json.features || [];
+      console.log(`[Utilities] "${def.title}": ${features.length} features in bbox`);
+
+      let crossingCount = 0;
+      features.forEach(feat => {
+        if (!feat.geometry) return;
+        const coords = flatCoords(feat.geometry.coordinates || []);
+        if (coords.length < 2) return;
+
+        let intersects = false;
+        try {
+          const featureLine = turf.lineString(coords);
+          for (const pipCoords of pipelineLines) {
+            const pipLine = turf.lineString(pipCoords);
+            const pts = turf.lineIntersect(pipLine, featureLine);
+            if (pts.features.length > 0) {
+              intersects = true;
+              pts.features.forEach(pt => {
+                const [lng, lat] = pt.geometry.coordinates;
+                L.circleMarker([lat, lng], {
+                  radius: 5, color: '#fff', fillColor: def.color, fillOpacity: 1, weight: 2
+                })
+                .bindPopup(() => buildUtilityPopup(feat.properties, def.title))
+                .addTo(layers.crossings);
+              });
+              crossingCount += pts.features.length;
+              break;
+            }
+          }
+        } catch(e) {}
+
+        if (!intersects) return;
+
+        try {
+          L.polyline(coords.map(c => [c[1], c[0]]), {
+            color: def.color, weight: 2.5, opacity: 0.85
+          })
+          .bindPopup(() => buildUtilityPopup(feat.properties, def.title))
+          .addTo(layers[def.key]);
+        } catch(e) {}
+      });
+
+      document.getElementById('cnt-' + def.key).textContent = crossingCount;
+
+    } catch(e) {
+      console.error(`[Utilities] Fetch error "${def.title}":`, e.message);
+      document.getElementById('cnt-' + def.key).textContent = '!';
+    }
+
+    await new Promise(r => setTimeout(r, 30));
+  }
+}
+
+function buildUtilityPopup(p, title) {
+  if (!p) return `<b>${title}</b>`;
+  const name   = p.NAME || p.name || p.OPERATOR || p.operator || p.COMPANY || p.company || '';
+  const type   = p.TYPE || p.type || p.PIPE_TYPE || p.SUB_TYPE || '';
+  const status = p.STATUS || p.status || p.PIPELINE_STATUS || '';
+  return `<div style="min-width:160px;font-size:0.82em">
+    <b style="color:#e8eaf0">${title}</b><br>
+    ${name   ? `<span style="color:#aaa">${name}</span><br>`       : ''}
+    ${type   ? `<span style="color:#888">Type: ${type}</span><br>` : ''}
+    ${status ? `<span style="color:#888">Status: ${status}</span>` : ''}
+  </div>`;
+}
+
+
+function classifyElement(el) {
+  const tags = el.tags || {};
+  if (tags.railway === 'rail') return 'railroad';
+  if (tags.waterway || tags.natural === 'water' || tags.water !== undefined) return 'water';
+
+  const hw = tags.highway || '';
+  if (/^(motorway|trunk|motorway_link|trunk_link)$/.test(hw)) return 'federal';
+  if (/^(primary|secondary|primary_link|secondary_link)$/.test(hw)) return 'state';
+  if (/^(tertiary|residential|unclassified|tertiary_link|service|living_street|road)$/.test(hw)) return 'local';
+  return null;
+}
+
+const COLORS = {
+  railroad: '#ff9f43',
+  water: '#4fc3f7',
+  local: '#a8e063',
+  state: '#f7b731',
+  federal: '#fc5c65',
+};
+
+// ═══════════════════════════════════════════════
+// SPATIAL ANALYSIS
+// ═══════════════════════════════════════════════
+function analyzeOSM(pipelineLines, elements) {
+  const counts = { railroad: 0, water: 0, local: 0, state: 0, federal: 0 };
+
+  // Build merged pipeline multilinestring for turf
+  const pipeGeoJSON = turf.multiLineString(pipelineLines);
+
+  elements.forEach(el => {
+    if (el.type !== 'way' || !el.geometry) return;
+    const cat = classifyElement(el);
+    if (!cat) return;
+
+    // Build feature geometry
+    const coords = el.geometry.map(n => [n.lon, n.lat]);
+    if (coords.length < 2) return;
+
+    const featureLine = turf.lineString(coords);
+
+    // Find intersections first — only draw features that actually cross the pipeline
+    let crossed = false;
+    const crossingPoints = [];
+    pipelineLines.forEach(pipCoords => {
+      const pipLine = turf.lineString(pipCoords);
+      try {
+        const intersects = turf.lineIntersect(pipLine, featureLine);
+        if (intersects.features.length > 0) {
+          crossed = true;
+          intersects.features.forEach(pt => crossingPoints.push(pt));
+          counts[cat] += intersects.features.length;
+        }
+      } catch (e) { /* skip degenerate geometries */ }
+    });
+
+    if (!crossed) return;
+
+    // Draw the feature line only if it crosses the pipeline
+    L.polyline(coords.map(c => [c[1], c[0]]), {
+      color: COLORS[cat], weight: cat === 'federal' ? 3 : 2, opacity: 0.85
+    }).addTo(layers[cat]);
+
+    // Draw crossing point markers
+    crossingPoints.forEach(pt => {
+      const [lng, lat] = pt.geometry.coordinates;
+      L.circleMarker([lat, lng], {
+        radius: 5,
+        color: '#fff',
+        fillColor: COLORS[cat],
+        fillOpacity: 1,
+        weight: 2
+      })
+      .bindPopup(`<b>${cat.charAt(0).toUpperCase()+cat.slice(1)} Crossing</b><br>${el.tags?.name || el.tags?.ref || 'Unnamed'}`)
+      .addTo(layers.crossings);
+    });
+  });
+
+  // Update UI
+  Object.keys(counts).forEach(cat => {
+    document.getElementById('cnt-' + cat).textContent = counts[cat];
+  });
+
+  document.getElementById('resultsSection').classList.add('visible');
+  document.getElementById('roadsSection').classList.add('visible');
+  document.getElementById('legend').classList.add('visible');
+  document.getElementById('exportBtn').style.display = 'block';
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  setStatus(`Analysis complete — ${total} total crossings found`, 'success');
+}
+
+// ═══════════════════════════════════════════════
+// RESET
+// ═══════════════════════════════════════════════
+function reset() {
+  Object.values(layers).forEach(lg => lg.clearLayers());
+  document.getElementById('resultsSection').classList.remove('visible');
+  document.getElementById('roadsSection').classList.remove('visible');
+  document.getElementById('utilitiesSection').classList.remove('visible');
+  document.getElementById('exportBtn').style.display = 'none';
+  document.getElementById('pipelineInfo').classList.remove('visible');
+  document.getElementById('legend').classList.remove('visible');
+  document.getElementById('parcelPanel').classList.remove('visible');
+  document.getElementById('parcelLoadBar').classList.remove('visible');
+  document.getElementById('parcelList').innerHTML = '';
+  document.getElementById('emptyState').style.display = 'flex';
+  currentPipelineLines = null;
+  currentBbox = null;
+  ['railroad','water','local','state','federal','parcel','electric','waterline','fiber','gas-transmission','gas-distribution','gas-gathering'].forEach(k => {
+    const el = document.getElementById('cnt-' + k);
+    if (el) el.textContent = k === 'parcel' ? '—' : '0';
+    const card = document.getElementById('card-' + k);
+    if (card) card.classList.remove('active');
+    layerVisible[k] = true;
+    if (!map.hasLayer(layers[k])) map.addLayer(layers[k]);
+  });
+}
+
+// ═══════════════════════════════════════════════
+// EXPORT REPORT
+// ═══════════════════════════════════════════════
+
+// Collect all current crossing data for the report
+function getCrossingData() {
+  const get = id => {
+    const el = document.getElementById(id);
+    if (!el) return '—';
+    const v = el.textContent.trim();
+    return (v === '' || v === '…') ? '—' : v;
+  };
+
+  return {
+    // Environment & Hydrology
+    railroad:         get('cnt-railroad'),
+    water:            get('cnt-water'),
+    parcel:           get('cnt-parcel'),
+    // Roads
+    federal:          get('cnt-federal'),
+    state:            get('cnt-state'),
+    local:            get('cnt-local'),
+    // Utilities
+    electric:         get('cnt-electric'),
+    waterline:        get('cnt-waterline'),
+    fiber:            get('cnt-fiber'),
+    gasTransmission:  get('cnt-gas-transmission'),
+    gasDistribution:  get('cnt-gas-distribution'),
+    gasGathering:     get('cnt-gas-gathering'),
+    // Parcel list
+    parcels: [...document.querySelectorAll('#parcelList .parcel-item')].map(el => ({
+      owner: el.querySelector('.parcel-owner')?.textContent?.trim() || '—',
+      meta:  el.querySelector('.parcel-meta')?.textContent?.trim()  || '—',
+    })),
+  };
+}
+
+async function exportReport() {
+  const btn = document.getElementById('exportBtn');
+  btn.textContent = '⏳ Generating report…';
+  btn.disabled = true;
+
+  try {
+    // Capture map as image using Leaflet's container
+    const mapImg = await captureMap();
+    const data   = getCrossingData();
+    const date   = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+    const pipLen = document.getElementById('pipLength')?.textContent || '—';
+    const pipSeg = document.getElementById('pipSegments')?.textContent || '—';
+
+    const html = buildReportHTML(data, mapImg, date, pipLen, pipSeg);
+
+    // Open in new tab and trigger print
+    const win = window.open('', '_blank');
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    // Small delay to let images load before print dialog
+    setTimeout(() => win.print(), 800);
+
+  } catch(e) {
+    console.error('[Export]', e);
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.textContent = '📄 Export Crossing Report';
+    btn.disabled = false;
+  }
+}
+
+// Capture the current map view as a base64 PNG using html2canvas-style canvas merge
+async function captureMap() {
+  return new Promise(resolve => {
+    // Use leaflet-image approach: merge all canvas tile layers
+    const mapContainer = document.getElementById('map');
+    const w = mapContainer.offsetWidth;
+    const h = mapContainer.offsetHeight;
+
+    // Create a canvas and draw each tile layer canvas onto it
+    const canvas = document.createElement('canvas');
+    canvas.width  = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+
+    // Draw basemap tiles
+    const tileCanvases = mapContainer.querySelectorAll('.leaflet-tile-pane canvas');
+    tileCanvases.forEach(c => {
+      try { ctx.drawImage(c, 0, 0); } catch(e) {}
+    });
+
+    // Draw all SVG overlays (pipeline, crossings, parcels)
+    const svgs = mapContainer.querySelectorAll('.leaflet-overlay-pane svg');
+    svgs.forEach(svg => {
+      try {
+        const xml  = new XMLSerializer().serializeToString(svg);
+        const blob = new Blob([xml], { type:'image/svg+xml' });
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => { ctx.drawImage(img, 0, 0); URL.revokeObjectURL(url); };
+        img.src = url;
+      } catch(e) {}
+    });
+
+    // Give SVGs 300ms to render
+    setTimeout(() => {
+      try {
+        resolve(canvas.toDataURL('image/png'));
+      } catch(e) {
+        // CORS tainted canvas — return empty string, report will just omit map image
+        console.warn('[Export] Map canvas tainted by CORS, skipping map image');
+        resolve('');
+      }
+    }, 300);
+  });
+}
+
+function row(label, value, color) {
+  const dot = color ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:8px;vertical-align:middle"></span>` : '';
+  const num = (value === '—' || value === '0' || value === 0) ? `<span style="color:#999">${value}</span>` : `<strong style="color:#1a1a2e">${value}</strong>`;
+  return `<tr><td style="padding:7px 12px;border-bottom:1px solid #eee">${dot}${label}</td><td style="padding:7px 12px;border-bottom:1px solid #eee;text-align:right">${num}</td></tr>`;
+}
+
+function sectionHeader(title) {
+  return `<tr><td colspan="2" style="padding:10px 12px 4px;background:#f5f7fa;font-size:0.68rem;letter-spacing:0.12em;text-transform:uppercase;color:#666;font-weight:600">${title}</td></tr>`;
+}
+
+function buildReportHTML(data, mapImg, date, pipLen, pipSeg) {
+  const total = ['railroad','water','federal','state','local','electric','waterline','fiber','gasTransmission','gasDistribution','gasGathering']
+    .reduce((sum, k) => { const v = parseInt(data[k]); return sum + (isNaN(v) ? 0 : v); }, 0);
+
+  const parcelRows = data.parcels.length
+    ? data.parcels.map(p => `<tr><td style="padding:5px 10px;border-bottom:1px solid #eee;font-size:0.82rem">${p.owner}</td><td style="padding:5px 10px;border-bottom:1px solid #eee;font-size:0.75rem;color:#666">${p.meta}</td></tr>`).join('')
+    : `<tr><td colspan="2" style="padding:8px 10px;color:#999;font-size:0.82rem">No parcel data loaded</td></tr>`;
+
+  const mapSection = mapImg
+    ? `<div style="margin-bottom:28px;border:1px solid #ddd;border-radius:8px;overflow:hidden">
+         <img src="${mapImg}" style="width:100%;display:block" />
+       </div>`
+    : `<div style="margin-bottom:28px;padding:40px;background:#f5f7fa;border-radius:8px;text-align:center;color:#999;border:1px solid #ddd">
+         Map image unavailable (CORS restriction on tile layer)
+       </div>`;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<title>Pipeline Crossing Report — ${date}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a2e; background: #fff; padding: 40px; max-width: 900px; margin: 0 auto; }
+  @media print {
+    body { padding: 20px; }
+    .no-print { display: none; }
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; color: #1a1a2e; }
+  .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 28px; }
+  .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }
+  .meta-card { background: #f5f7fa; border: 1px solid #e0e4ef; border-radius: 8px; padding: 14px 16px; }
+  .meta-card .label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 4px; }
+  .meta-card .value { font-size: 1.3rem; font-weight: 700; color: #1a1a2e; }
+  h2 { font-size: 0.95rem; margin-bottom: 10px; margin-top: 24px; color: #333; border-bottom: 2px solid #e0e4ef; padding-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 20px; }
+  .parcel-table th { padding: 7px 10px; background: #f5f7fa; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; text-align: left; border-bottom: 2px solid #e0e4ef; }
+  .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; font-size: 0.72rem; color: #aaa; display: flex; justify-content: space-between; }
+  .print-btn { display: inline-block; margin-bottom: 20px; padding: 9px 20px; background: #4f7cff; color: #fff; border: none; border-radius: 6px; font-size: 0.82rem; cursor: pointer; }
+</style>
+</head>
+<body>
+  <button class="print-btn no-print" onclick="window.print()">🖨 Print / Save as PDF</button>
+
+  <h1>Pipeline Crossing Analysis Report</h1>
+  <div class="subtitle">Generated ${date} · Datapoint Survey</div>
+
+  <div class="meta-grid">
+    <div class="meta-card">
+      <div class="label">Pipeline Length</div>
+      <div class="value">${pipLen}</div>
+    </div>
+    <div class="meta-card">
+      <div class="label">Segments</div>
+      <div class="value">${pipSeg}</div>
+    </div>
+    <div class="meta-card">
+      <div class="label">Total Crossings</div>
+      <div class="value">${total}</div>
+    </div>
+  </div>
+
+  <h2>Map</h2>
+  ${mapSection}
+
+  <h2>Crossing Summary</h2>
+  <table>
+    ${sectionHeader('Environment & Hydrology')}
+    ${row('Railroads',             data.railroad,        '#ff9f43')}
+    ${row('Rivers & Waterbodies',  data.water,           '#4fc3f7')}
+    ${row('Land Parcels Crossed',  data.parcel,          '#c084fc')}
+    ${sectionHeader('Roads')}
+    ${row('Federal / Interstate',  data.federal,         '#fc5c65')}
+    ${row('State Roads',           data.state,           '#f7b731')}
+    ${row('Local / County Roads',  data.local,           '#a8e063')}
+    ${sectionHeader('Utilities')}
+    ${row('Electric Transmission', data.electric,        '#ffd700')}
+    ${row('Water Lines',           data.waterline,       '#38bdf8')}
+    ${row('Fiber Optic',           data.fiber,           '#fb923c')}
+    ${sectionHeader('Natural Gas')}
+    ${row('Gas Transmission',      data.gasTransmission, '#f87171')}
+    ${row('Gas Distribution',      data.gasDistribution, '#fb923c')}
+    ${row('Gas Gathering',         data.gasGathering,    '#a78bfa')}
+    <tr style="background:#f5f7fa">
+      <td style="padding:8px 12px;font-weight:700">Total Crossings</td>
+      <td style="padding:8px 12px;font-weight:700;text-align:right">${total}</td>
+    </tr>
+  </table>
+
+  <h2>Crossed Parcels (${data.parcels.length})</h2>
+  <table class="parcel-table">
+    <thead>
+      <tr>
+        <th>Owner</th>
+        <th>APN / Acreage / County</th>
+      </tr>
+    </thead>
+    <tbody>${parcelRows}</tbody>
+  </table>
+
+  <div class="footer">
+    <span>Pipeline Crossing Analyzer · datapointgis.github.io/pipeline-crossings</span>
+    <span>${date}</span>
+  </div>
+</body>
+</html>`;
+}
+
+</script>
+</body>
+</html>
